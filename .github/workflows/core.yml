@@ -1,0 +1,26 @@
+name: core
+
+on:
+  push:
+    paths: ["core/**", "testdata/**", ".github/workflows/core.yml"]
+  pull_request:
+    paths: ["core/**", "testdata/**", ".github/workflows/core.yml"]
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: core
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: core/go.mod
+      - run: go build ./...
+      - run: go vet ./...
+      - run: go test ./...

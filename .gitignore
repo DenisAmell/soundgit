@@ -38,3 +38,7 @@ compile_commands.json
 *.swp
 *.xcuserstate
 xcuserdata/
+
+# ── Go (core) ────────────────────────────────────────────────
+/core/soundgit
+/core/soundgit.exe
