@@ -1,360 +1,592 @@
 #include "PluginEditor.h"
 
-// ── Цветовая схема ────────────────────────────────────────────────────────────
 namespace Colors
 {
     const juce::Colour bg        { 0xFF1A1A2E };
-    const juce::Colour surface   { 0xFF16213E };
     const juce::Colour card      { 0xFF0F1B30 };
     const juce::Colour accent    { 0xFF0F3460 };
     const juce::Colour highlight { 0xFFE94560 };
     const juce::Colour text      { 0xFFEEEEEE };
-    const juce::Colour subtext   { 0xFF7B8FA1 };
+    const juce::Colour subtext   { 0xFF8FA3B5 };
     const juce::Colour green     { 0xFF4CAF50 };
     const juce::Colour yellow    { 0xFFFFB300 };
-    const juce::Colour red       { 0xFFE53935 };
+    const juce::Colour red       { 0xFFE5534B };
 }
 
-// ── Кастомный LookAndFeel ─────────────────────────────────────────────────────
-class BackuperLookAndFeel : public juce::LookAndFeel_V4
+namespace
 {
-public:
-    void drawButtonBackground(juce::Graphics& g, juce::Button& button,
-                              const juce::Colour& backgroundColour,
-                              bool isHighlighted, bool isDown) override
+    juce::String bytes (juce::int64 n)
     {
-        auto bounds = button.getLocalBounds().toFloat().reduced(0.5f);
-        auto col = backgroundColour;
-        if (isDown)            col = col.darker(0.2f);
-        else if (isHighlighted) col = col.brighter(0.1f);
-        g.setColour(col);
-        g.fillRoundedRectangle(bounds, 5.0f);
-        g.setColour(col.brighter(0.3f));
-        g.drawRoundedRectangle(bounds, 5.0f, 1.0f);
+        if (n < 0)
+            return RU ("без ограничения");
+        const double gb = (double) n / (1024.0 * 1024.0 * 1024.0);
+        if (gb >= 1.0)
+            return juce::String (gb, 1).replaceCharacter ('.', ',') + RU (" ГБ");
+        return juce::String ((double) n / (1024.0 * 1024.0), 1).replaceCharacter ('.', ',') + RU (" МБ");
     }
 
-    void drawButtonText(juce::Graphics& g, juce::TextButton& button, bool, bool) override
+    juce::String cloudName (const Snapshot& s, const juce::String& providerId)
     {
-        g.setFont(juce::Font(12.5f, juce::Font::bold));
-        g.setColour(button.findColour(juce::TextButton::textColourOffId));
-        g.drawText(button.getButtonText(), button.getLocalBounds(),
-                   juce::Justification::centred, false);
+        for (auto& p : s.providers)
+            if (p.id == providerId)
+                return p.name;
+        return providerId;
     }
-};
 
-static BackuperLookAndFeel globalLAF;
+    juce::String files (int n)
+    {
+        const int d = n % 10, h = n % 100;
+        if (d == 1 && h != 11)                          return juce::String (n) + RU (" файл");
+        if (d >= 2 && d <= 4 && (h < 12 || h > 14))     return juce::String (n) + RU (" файла");
+        return juce::String (n) + RU (" файлов");
+    }
 
-// ─────────────────────────────────────────────────────────────────────────────
+    /** Turns the helper's technical reasons into something to act on. */
+    juce::String explain (const juce::String& error)
+    {
+        if (error.containsIgnoreCase ("network") || error.contains ("HTTP 5") || error.contains ("HTTP 429"))
+            return RU ("Нет связи с облаком. Повторяю автоматически.");
+        if (error.containsIgnoreCase ("file name"))
+            return RU ("Облако не принимает имя файла. Переименуйте файл.");
+        if (error.containsIgnoreCase ("permission"))
+            return RU ("Нет доступа к файлу на диске.");
+        return error;
+    }
 
-AudioBackuperEditor::AudioBackuperEditor(AudioBackuperProcessor& p)
-    : AudioProcessorEditor(&p), processor(p), service(p.getBackuperService())
+    void style (juce::TextButton& b, juce::Colour colour)
+    {
+        b.setColour (juce::TextButton::buttonColourId, colour);
+        b.setColour (juce::TextButton::textColourOffId, Colors::text);
+        b.setColour (juce::TextButton::textColourOnId, Colors::text);
+    }
+
+    void style (juce::Label& l, float size, juce::Colour colour, bool bold = false)
+    {
+        l.setFont (juce::FontOptions (size, bold ? juce::Font::bold : juce::Font::plain));
+        l.setColour (juce::Label::textColourId, colour);
+        l.setMinimumHorizontalScale (0.7f);
+    }
+}
+
+AudioBackuperEditor::AudioBackuperEditor (AudioBackuperProcessor& p)
+    : AudioProcessorEditor (&p), client (p.getClient())
 {
-    setSize(440, 500);
-    setLookAndFeel(&globalLAF);
+    setSize (460, 520);
 
-    service.onStatusChanged = [this]
+    for (auto* c : std::initializer_list<juce::Component*> {
+             &title, &statusLine, &headline, &detail, &accountLine, &folderLine, &errorLine, &hint, &codeLabel,
+             &localCaption, &remoteCaption, &remoteFolder, &recent, &progressBar,
+             &yandexButton, &googleButton, &tokenButton, &openPageButton, &cancelLoginButton,
+             &chooseButton, &doneButton, &signOutButton, &errorButton, &existingButton, &retryButton,
+             &settingsButton, &recursiveToggle, &versionsToggle, &pauseToggle })
+        addChildComponent (c);
+
+    title.setText ("AUDIO BACKUPER", juce::dontSendNotification);
+    style (title, 19.0f, Colors::highlight, true);
+    title.setVisible (true);
+    style (statusLine, 12.5f, Colors::subtext);
+    statusLine.setJustificationType (juce::Justification::centredRight);
+    statusLine.setVisible (true);
+
+    style (headline, 17.0f, Colors::text, true);
+    style (detail, 13.0f, Colors::subtext);
+    detail.setJustificationType (juce::Justification::topLeft);
+    style (accountLine, 12.5f, Colors::subtext);
+    style (folderLine, 12.5f, Colors::subtext);
+    style (errorLine, 13.0f, Colors::yellow);
+    errorLine.setJustificationType (juce::Justification::topLeft);
+    style (hint, 12.0f, Colors::subtext);
+    hint.setJustificationType (juce::Justification::topLeft);
+    style (codeLabel, 30.0f, Colors::text, true);
+    codeLabel.setJustificationType (juce::Justification::centred);
+    style (localCaption, 10.5f, Colors::subtext, true);
+    style (remoteCaption, 10.5f, Colors::subtext, true);
+    localCaption.setText (RU ("ПАПКА С РЕНДЕРАМИ"), juce::dontSendNotification);
+    remoteCaption.setText (RU ("ПАПКА В ОБЛАКЕ"), juce::dontSendNotification);
+
+    for (auto* e : { &remoteFolder, &recent })
     {
-        juce::MessageManager::callAsync([this] { updateStatusUI(); });
+        e->setColour (juce::TextEditor::backgroundColourId, Colors::card);
+        e->setColour (juce::TextEditor::textColourId, Colors::text);
+        e->setColour (juce::TextEditor::outlineColourId, Colors::accent);
+        e->setColour (juce::TextEditor::focusedOutlineColourId, Colors::highlight);
+    }
+    recent.setMultiLine (true);
+    recent.setReadOnly (true);
+    recent.setCaretVisible (false);
+    recent.setFont (juce::FontOptions (12.0f));
+    recent.setColour (juce::TextEditor::textColourId, Colors::subtext);
+    progressBar.setColour (juce::ProgressBar::foregroundColourId, Colors::green);
+    progressBar.setColour (juce::ProgressBar::backgroundColourId, Colors::card);
+    progressBar.setPercentageDisplay (true);
+
+    style (yandexButton, Colors::accent);
+    style (googleButton, Colors::accent);
+    style (tokenButton, Colors::card);
+    style (openPageButton, Colors::accent);
+    style (cancelLoginButton, Colors::card);
+    style (chooseButton, Colors::accent);
+    style (doneButton, Colors::green.darker (0.3f));
+    style (signOutButton, Colors::card);
+    style (errorButton, Colors::highlight.darker (0.2f));
+    style (existingButton, Colors::accent);
+    style (retryButton, Colors::accent);
+    style (settingsButton, Colors::card);
+
+    tokenButton.setButtonText (RU ("Вставить токен Яндекса (для разработки)"));
+    openPageButton.setButtonText (RU ("Открыть страницу ещё раз"));
+    cancelLoginButton.setButtonText (RU ("Отмена"));
+    chooseButton.setButtonText (RU ("Выбрать папку…"));
+    doneButton.setButtonText (RU ("Начать копирование"));
+    signOutButton.setButtonText (RU ("Выйти из облака"));
+    settingsButton.setButtonText (RU ("Настройки"));
+    recursiveToggle.setButtonText (RU ("Включая вложенные папки"));
+    versionsToggle.setButtonText (RU ("Хранить прежние версии изменённых файлов"));
+    pauseToggle.setButtonText (RU ("Пауза"));
+    for (auto* t : { &recursiveToggle, &versionsToggle, &pauseToggle })
+        t->setColour (juce::ToggleButton::textColourId, Colors::text);
+
+    yandexButton.onClick = [this] { client.startLogin ("yandex"); };
+    googleButton.onClick = [this] { client.startLogin ("gdrive"); };
+    tokenButton.onClick = [this] { askForToken(); };
+    cancelLoginButton.onClick = [this] { client.cancelLogin(); };
+    openPageButton.onClick = [this]
+    {
+        auto url = client.getSnapshot().login.url;
+        if (url.isNotEmpty())
+            juce::URL (url).launchInDefaultBrowser();
+    };
+    chooseButton.onClick = [this] { chooseFolder(); };
+    doneButton.onClick = [this] { applyFolderSettings(); };
+    signOutButton.onClick = [this]
+    {
+        auto w = client.getWatch();
+        client.logout (w.accountId);
+        editingFolder = false;
+    };
+    settingsButton.onClick = [this]
+    {
+        draft = client.getWatch();
+        editingFolder = true;
+        refresh();
+    };
+    pauseToggle.onClick = [this] { client.setPaused (pauseToggle.getToggleState()); };
+    existingButton.onClick = [this] { client.uploadExisting(); };
+    retryButton.onClick = [this] { client.retry ({}); };
+    errorButton.onClick = [this]
+    {
+        if (errorAction == "login")        client.startLogin (errorProvider);
+        else if (errorAction == "retry")   client.retry ({});
+        else if (errorAction == "folder")  { draft = client.getWatch(); editingFolder = true; refresh(); }
     };
 
-    // ── Title ─────────────────────────────────────────────────────────────────
-    titleLabel.setText("AUDIO BACKUPER", juce::dontSendNotification);
-    titleLabel.setFont(juce::Font(20.0f, juce::Font::bold));
-    titleLabel.setColour(juce::Label::textColourId, Colors::highlight);
-    titleLabel.setJustificationType(juce::Justification::centredLeft);
-    addAndMakeVisible(titleLabel);
-
-    // ── Status ────────────────────────────────────────────────────────────────
-    statusDot.setText("●", juce::dontSendNotification);
-    statusDot.setFont(juce::Font(16.0f));
-    statusDot.setJustificationType(juce::Justification::centred);
-    addAndMakeVisible(statusDot);
-
-    statusLabel.setFont(juce::Font(13.0f));
-    statusLabel.setColour(juce::Label::textColourId, Colors::subtext);
-    addAndMakeVisible(statusLabel);
-
-    // ── Folder ────────────────────────────────────────────────────────────────
-    folderLabel.setText("WATCH FOLDER", juce::dontSendNotification);
-    folderLabel.setFont(juce::Font(10.0f, juce::Font::bold));
-    folderLabel.setColour(juce::Label::textColourId, Colors::subtext);
-    addAndMakeVisible(folderLabel);
-
-    folderPathLabel.setFont(juce::Font(12.0f));
-    folderPathLabel.setColour(juce::Label::textColourId, Colors::text);
-    folderPathLabel.setMinimumHorizontalScale(0.5f);
-    addAndMakeVisible(folderPathLabel);
-
-    // ── Stats ─────────────────────────────────────────────────────────────────
-    pendingLabel.setFont(juce::Font(13.0f, juce::Font::bold));
-    pendingLabel.setColour(juce::Label::textColourId, Colors::text);
-    pendingLabel.setJustificationType(juce::Justification::centred);
-    addAndMakeVisible(pendingLabel);
-
-    lastSyncLabel.setFont(juce::Font(10.5f));
-    lastSyncLabel.setColour(juce::Label::textColourId, Colors::subtext);
-    lastSyncLabel.setJustificationType(juce::Justification::centred);
-    addAndMakeVisible(lastSyncLabel);
-
-    // ── Log box ───────────────────────────────────────────────────────────────
-    logBox.setMultiLine(true);
-    logBox.setReadOnly(true);
-    logBox.setScrollbarsShown(true);
-    logBox.setFont(juce::Font(juce::Font::getDefaultMonospacedFontName(), 10.5f, 0));
-    logBox.setColour(juce::TextEditor::backgroundColourId, Colors::card);
-    logBox.setColour(juce::TextEditor::textColourId,       Colors::subtext);
-    logBox.setColour(juce::TextEditor::outlineColourId,    Colors::accent);
-    logBox.setText("Waiting for service...\n");
-    addAndMakeVisible(logBox);
-
-    // ── Buttons ───────────────────────────────────────────────────────────────
-    auto styleBtn = [](juce::TextButton& btn, juce::Colour bg, juce::Colour fg)
-    {
-        btn.setColour(juce::TextButton::buttonColourId,  bg);
-        btn.setColour(juce::TextButton::textColourOffId, fg);
-        btn.setColour(juce::TextButton::textColourOnId,  fg);
-    };
-
-    styleBtn(chooseFolderButton, Colors::accent, Colors::text);
-    chooseFolderButton.onClick = [this] { chooseWatchFolder(); };
-    addAndMakeVisible(chooseFolderButton);
-
-    styleBtn(yandexTokenButton, Colors::accent, Colors::text);
-    yandexTokenButton.onClick = [this] { openYandexTokenDialog(); };
-    addAndMakeVisible(yandexTokenButton);
-
-    styleBtn(startStopButton, Colors::green, Colors::text);
-    startStopButton.onClick = [this]
-    {
-        if (service.getStatus() == BackuperService::Status::Running ||
-            service.getStatus() == BackuperService::Status::Starting)
-        {
-            service.stop();
-            appendLog("Service stopped by user.");
-        }
-        else
-        {
-            service.startIfNotRunning();
-            appendLog("Starting service...");
-        }
-    };
-    addAndMakeVisible(startStopButton);
-
-    styleBtn(syncNowButton, Colors::highlight, Colors::text);
-    syncNowButton.onClick = [this] { service.syncNow(); appendLog("Manual sync triggered."); };
-    addAndMakeVisible(syncNowButton);
-
-    pauseToggle.setColour(juce::ToggleButton::textColourId, Colors::text);
-    pauseToggle.onClick = [this]
-    {
-        if (pauseToggle.getToggleState()) { service.pauseBackup();  appendLog("Backup paused."); }
-        else                             { service.resumeBackup(); appendLog("Backup resumed."); }
-    };
-    addAndMakeVisible(pauseToggle);
-
-    startTimer(3000);
-    updateStatusUI();
+    draft = client.getWatch();
+    client.onChange = [this] { refresh(); };
+    client.setInterfaceOpen (true);
+    refresh();
 }
 
 AudioBackuperEditor::~AudioBackuperEditor()
 {
-    service.onStatusChanged = nullptr;
-    stopTimer();
-    setLookAndFeel(nullptr);
+    client.onChange = nullptr;
+    client.setInterfaceOpen (false);
 }
 
-// ── Paint ─────────────────────────────────────────────────────────────────────
-
-void AudioBackuperEditor::paint(juce::Graphics& g)
+void AudioBackuperEditor::paint (juce::Graphics& g)
 {
-    g.fillAll(Colors::bg);
-
-    // Линия под заголовком
-    g.setColour(Colors::accent);
-    g.drawHorizontalLine(50, 20.0f, (float)(getWidth() - 20));
-
-    // Карточка статистики
-    juce::Rectangle<float> statsCard { 20.0f, 168.0f, (float)(getWidth() - 40), 74.0f };
-    g.setColour(Colors::card);
-    g.fillRoundedRectangle(statsCard, 8.0f);
-    g.setColour(Colors::accent);
-    g.drawRoundedRectangle(statsCard, 8.0f, 1.0f);
-
-    // Вертикальный разделитель внутри карточки
-    g.setColour(Colors::accent);
-    g.drawVerticalLine((int)statsCard.getCentreX(), statsCard.getY() + 10, statsCard.getBottom() - 10);
-
-    // Подписи EVENT LOG
-    g.setFont(juce::Font(9.5f, juce::Font::bold));
-    g.setColour(Colors::subtext);
-    g.drawText("EVENT LOG", juce::Rectangle<int>(20, 260, 100, 14),
-               juce::Justification::centredLeft);
+    g.fillAll (Colors::bg);
+    g.setColour (Colors::accent);
+    g.drawHorizontalLine (52, 20.0f, (float) getWidth() - 20.0f);
 }
 
-// ── Layout ────────────────────────────────────────────────────────────────────
+AudioBackuperEditor::Page AudioBackuperEditor::choosePage (const Snapshot& s, const WatchSpec& w) const
+{
+    if (! s.connected)                          return Page::connecting;
+    if (s.login.state == "pending")             return Page::loginWait;
+    if (s.account (w.accountId) == nullptr)     return Page::signIn;
+    if (w.localPath.isEmpty() || editingFolder) return Page::folder;
+    return Page::working;
+}
+
+void AudioBackuperEditor::showPage (Page p)
+{
+    page = p;
+    auto show = [] (std::initializer_list<juce::Component*> list, bool visible)
+    {
+        for (auto* c : list)
+            c->setVisible (visible);
+    };
+    show ({ &headline, &detail, &accountLine, &folderLine, &errorLine, &hint, &codeLabel, &localCaption, &remoteCaption,
+            &remoteFolder, &recent, &progressBar, &yandexButton, &googleButton, &tokenButton, &openPageButton,
+            &cancelLoginButton, &chooseButton, &doneButton, &signOutButton, &errorButton, &existingButton,
+            &retryButton, &settingsButton, &recursiveToggle, &versionsToggle, &pauseToggle }, false);
+
+    switch (p)
+    {
+        case Page::connecting: show ({ &headline, &detail }, true); break;
+        case Page::signIn:     show ({ &headline, &detail, &yandexButton, &googleButton, &tokenButton, &errorLine }, true); break;
+        case Page::loginWait:  show ({ &headline, &detail, &codeLabel, &openPageButton, &cancelLoginButton }, true); break;
+        case Page::folder:     show ({ &headline, &accountLine, &localCaption, &folderLine, &chooseButton, &remoteCaption,
+                                       &remoteFolder, &recursiveToggle, &versionsToggle, &hint, &doneButton, &signOutButton }, true); break;
+        case Page::working:    show ({ &headline, &detail, &accountLine, &folderLine, &recent, &pauseToggle, &settingsButton }, true); break;
+    }
+    resized();
+}
+
+void AudioBackuperEditor::refresh()
+{
+    auto s = client.getSnapshot();
+    auto w = client.getWatch();
+    auto next = choosePage (s, w);
+    if (next != page || ! headline.isVisible())
+    {
+        if (next == Page::folder && page != Page::folder)
+        {
+            draft = w;
+            remoteFolder.setText (draft.remoteFolder, juce::dontSendNotification);
+        }
+        showPage (next);
+    }
+
+    statusLine.setText (s.connected ? RU ("помощник ") + s.helperVersion : RU ("нет связи с помощником"),
+                        juce::dontSendNotification);
+    statusLine.setColour (juce::Label::textColourId, s.connected ? Colors::subtext : Colors::yellow);
+
+    auto* account = s.account (w.accountId);
+    juce::String accountText;
+    if (account != nullptr)
+        accountText = cloudName (s, account->provider) + ": " + account->name
+                      + RU (" · свободно ") + bytes (account->free);
+
+    switch (page)
+    {
+        case Page::connecting:
+            headline.setText (RU ("Запускаю помощника…"), juce::dontSendNotification);
+            detail.setText (s.problem.contains ("missing")
+                                ? RU ("В комплекте плагина нет помощника. Переустановите плагин.")
+                                : RU ("Помощник копирует файлы в фоне и не мешает работе в DAW."),
+                            juce::dontSendNotification);
+            break;
+
+        case Page::signIn:
+        {
+            headline.setText (RU ("Подключите облако"), juce::dontSendNotification);
+            detail.setText (RU ("Вход выполняется на странице облака в браузере. Плагин получает доступ только к своей папке."),
+                            juce::dontSendNotification);
+            bool yandex = false, google = false, manual = false;
+            for (auto& p : s.providers)
+            {
+                if (p.id == "yandex") { yandex = p.configured; manual = p.manualToken; }
+                if (p.id == "gdrive") google = p.configured;
+            }
+            yandexButton.setEnabled (yandex);
+            googleButton.setEnabled (google);
+            yandexButton.setButtonText (yandex ? RU ("Войти в Яндекс Диск") : RU ("Яндекс Диск — недоступен в этой сборке"));
+            googleButton.setButtonText (google ? RU ("Войти в Google Drive") : RU ("Google Drive — недоступен в этой сборке"));
+            tokenButton.setVisible (manual);
+            auto problem = s.login.state == "failed" ? s.login.error : s.notice;
+            errorLine.setText (problem.isNotEmpty() ? RU ("Не удалось войти: ") + problem : juce::String(),
+                               juce::dontSendNotification);
+            break;
+        }
+
+        case Page::loginWait:
+            headline.setText (RU ("Подтвердите вход в браузере"), juce::dontSendNotification);
+            detail.setText (s.login.userCode.isNotEmpty()
+                                ? RU ("На открывшейся странице ") + cloudName (s, s.login.provider) + RU (" введите код:")
+                                : RU ("На открывшейся странице ") + cloudName (s, s.login.provider)
+                                      + RU (" разрешите доступ. Окно обновится само."),
+                            juce::dontSendNotification);
+            codeLabel.setText (s.login.userCode, juce::dontSendNotification);
+            break;
+
+        case Page::folder:
+            headline.setText (RU ("Что копировать"), juce::dontSendNotification);
+            accountLine.setText (accountText, juce::dontSendNotification);
+            folderLine.setText (draft.localPath.isEmpty() ? RU ("не выбрана") : draft.localPath, juce::dontSendNotification);
+            folderLine.setColour (juce::Label::textColourId, draft.localPath.isEmpty() ? Colors::yellow : Colors::text);
+            recursiveToggle.setToggleState (draft.recursive, juce::dontSendNotification);
+            versionsToggle.setToggleState (! draft.overwrite, juce::dontSendNotification);
+            hint.setText (RU ("Копируются аудиофайлы, которые появятся или изменятся в папке после настройки. "
+                              "Уже лежащие в ней файлы можно загрузить отдельной кнопкой."),
+                          juce::dontSendNotification);
+            doneButton.setEnabled (draft.localPath.isNotEmpty());
+            doneButton.setButtonText (w.localPath.isEmpty() ? RU ("Начать копирование") : RU ("Сохранить"));
+            break;
+
+        case Page::working:
+            accountLine.setText (accountText, juce::dontSendNotification);
+            fillWorking (s, w);
+            break;
+    }
+}
+
+void AudioBackuperEditor::fillWorking (const Snapshot& s, const WatchSpec& w)
+{
+    auto* watch = s.watch (w.id);
+    auto* account = s.account (w.accountId);
+    folderLine.setText (w.localPath + juce::String::fromUTF8 ("  \xe2\x86\x92  ")
+                            + (watch != nullptr ? watch->remoteFolder : w.remoteFolder),
+                        juce::dontSendNotification);
+    folderLine.setColour (juce::Label::textColourId, Colors::subtext);
+    pauseToggle.setToggleState (s.paused, juce::dontSendNotification);
+
+    const Snapshot::Upload* current = nullptr;
+    for (auto& u : s.uploads)
+        if (u.watchId == w.id)
+            current = &u;
+
+    // One problem at a time, the one that blocks the most.
+    juce::String problem, button;
+    errorAction.clear();
+    if (account != nullptr && account->status == "needs_login")
+    {
+        problem = RU ("Облако просит войти заново. Файлы ждут в очереди и не потеряются.");
+        button = RU ("Войти заново");
+        errorAction = "login";
+        errorProvider = account->provider;
+    }
+    else if (account != nullptr && account->status == "no_space")
+    {
+        problem = RU ("В облаке закончилось место. Освободите место и нажмите «Повторить».");
+        button = RU ("Повторить");
+        errorAction = "retry";
+    }
+    else if (watch != nullptr && ! watch->available)
+    {
+        problem = RU ("Папка недоступна: она удалена или диск отключён.");
+        button = RU ("Выбрать другую папку");
+        errorAction = "folder";
+    }
+    else if (watch != nullptr && watch->failed > 0)
+    {
+        auto& f = watch->failures.getReference (0);
+        problem = RU ("Не удалось загрузить ") + files (watch->failed) + ": " + f.file + juce::String::fromUTF8 (" \xe2\x80\x94 ") + explain (f.error);
+        button = RU ("Повторить");
+        errorAction = "retry";
+    }
+    else if (watch != nullptr && watch->pending > 0 && watch->lastError.isNotEmpty() && current == nullptr)
+    {
+        problem = explain (watch->lastError);
+    }
+    else if (s.secretsInFile)
+    {
+        problem = RU ("В системе нет хранилища секретов: доступ к облаку хранится в файле, закрытом от других пользователей.");
+    }
+
+    errorLine.setText (problem, juce::dontSendNotification);
+    errorLine.setVisible (problem.isNotEmpty());
+    errorButton.setButtonText (button);
+    errorButton.setVisible (button.isNotEmpty());
+
+    if (watch == nullptr)
+    {
+        headline.setText (RU ("Подключаю папку…"), juce::dontSendNotification);
+        detail.setText ({}, juce::dontSendNotification);
+        progressBar.setVisible (false);
+    }
+    else if (current != nullptr)
+    {
+        headline.setText (RU ("Загружается"), juce::dontSendNotification);
+        progress = current->size > 0 ? (double) current->sent / (double) current->size : 0.0;
+        juce::String more = watch->pending > 1 ? RU (" · в очереди ещё ") + juce::String (watch->pending - 1) : juce::String();
+        detail.setText (current->file + more, juce::dontSendNotification);
+        progressBar.setVisible (true);
+    }
+    else if (s.paused && watch->pending > 0)
+    {
+        headline.setText (RU ("Пауза"), juce::dontSendNotification);
+        detail.setText (RU ("В очереди ") + files (watch->pending), juce::dontSendNotification);
+        progressBar.setVisible (false);
+    }
+    else if (watch->pending > 0)
+    {
+        headline.setText (RU ("В очереди ") + files (watch->pending), juce::dontSendNotification);
+        detail.setText ({}, juce::dontSendNotification);
+        progressBar.setVisible (false);
+    }
+    else
+    {
+        headline.setText (RU ("Всё скопировано"), juce::dontSendNotification);
+        detail.setText (RU ("В облаке ") + files (watch->uploaded) + RU (" из этой папки"), juce::dontSendNotification);
+        progressBar.setVisible (false);
+    }
+
+    const int known = watch != nullptr ? watch->known : 0;
+    existingButton.setVisible (known > 0);
+    existingButton.setButtonText (RU ("Загрузить уже имеющиеся: ") + files (known));
+    retryButton.setVisible (false);
+
+    juce::String log;
+    for (auto& e : s.recent)
+    {
+        if (e.watchId != w.id)
+            continue;
+        auto time = juce::Time (e.time * 1000).formatted ("%d.%m %H:%M");
+        juce::String what = e.kind == "uploaded" ? RU ("загружен")
+                          : e.kind == "version"  ? RU ("прежняя версия сохранена")
+                          : e.kind == "failed"   ? RU ("не загружен")
+                                                 : RU ("пропущен");
+        log << time << "  " << e.file << juce::String::fromUTF8 (" \xe2\x80\x94 ") << what << "\n";
+    }
+    if (log.isEmpty())
+        log = RU ("Здесь появятся скопированные файлы.");
+    if (recent.getText() != log)
+        recent.setText (log, juce::dontSendNotification);
+
+    resized();
+}
 
 void AudioBackuperEditor::resized()
 {
-    auto area = getLocalBounds().reduced(20);
+    auto area = getLocalBounds().reduced (20);
+    auto top = area.removeFromTop (30);
+    title.setBounds (top.removeFromLeft (220));
+    statusLine.setBounds (top);
+    area.removeFromTop (16);
 
-    titleLabel.setBounds(area.removeFromTop(30));
-    area.removeFromTop(10); // divider
+    headline.setBounds (area.removeFromTop (26));
+    area.removeFromTop (4);
 
-    // Status row
-    auto statusRow = area.removeFromTop(22);
-    statusDot.setBounds(statusRow.removeFromLeft(22));
-    statusRow.removeFromLeft(6);
-    statusLabel.setBounds(statusRow);
-    area.removeFromTop(14);
-
-    // Folder
-    folderLabel.setBounds(area.removeFromTop(14));
-    area.removeFromTop(4);
-    auto folderRow = area.removeFromTop(24);
-    chooseFolderButton.setBounds(folderRow.removeFromRight(115));
-    folderRow.removeFromRight(8);
-    folderPathLabel.setBounds(folderRow);
-    area.removeFromTop(14);
-
-    // Stats card (y ≈ 168)
-    auto statsArea = area.removeFromTop(74);
-    auto leftHalf  = statsArea.removeFromLeft(statsArea.getWidth() / 2).reduced(8, 8);
-    pendingLabel .setBounds(leftHalf.removeFromTop(28));
-    lastSyncLabel.setBounds(leftHalf);
-    pauseToggle  .setBounds(statsArea.reduced(12, 22));
-    area.removeFromTop(14);
-
-    // Log label gap
-    area.removeFromTop(16);
-
-    // Buttons
-    auto btnRow = area.removeFromTop(30);
-    int  half   = (btnRow.getWidth() - 8) / 2;
-    yandexTokenButton.setBounds(btnRow.removeFromLeft(half));
-    btnRow.removeFromLeft(8);
-    syncNowButton.setBounds(btnRow);
-    area.removeFromTop(8);
-
-    startStopButton.setBounds(area.removeFromTop(34));
-    area.removeFromTop(8);
-
-    // Log fills the rest
-    logBox.setBounds(area);
-}
-
-// ── Update UI ─────────────────────────────────────────────────────────────────
-
-void AudioBackuperEditor::updateStatusUI()
-{
-    auto status = service.getStatus();
-
-    juce::Colour dotColor;
-    switch (status)
+    switch (page)
     {
-        case BackuperService::Status::Running:  dotColor = Colors::green;  break;
-        case BackuperService::Status::Starting: dotColor = Colors::yellow; break;
-        case BackuperService::Status::Error:    dotColor = Colors::red;    break;
-        default:                               dotColor = Colors::subtext; break;
-    }
-    statusDot.setColour(juce::Label::textColourId, dotColor);
-    statusLabel.setText(service.getStatusText(), juce::dontSendNotification);
+        case Page::connecting:
+            detail.setBounds (area.removeFromTop (60));
+            break;
 
-    bool running  = (status == BackuperService::Status::Running);
-    bool starting = (status == BackuperService::Status::Starting);
+        case Page::signIn:
+            detail.setBounds (area.removeFromTop (44));
+            area.removeFromTop (12);
+            yandexButton.setBounds (area.removeFromTop (38));
+            area.removeFromTop (8);
+            googleButton.setBounds (area.removeFromTop (38));
+            area.removeFromTop (16);
+            errorLine.setBounds (area.removeFromTop (48));
+            tokenButton.setBounds (area.removeFromBottom (28));
+            break;
 
-    startStopButton.setButtonText(running ? "Stop Service"
-                                 : starting ? "Starting..." : "Start Service");
-    startStopButton.setColour(juce::TextButton::buttonColourId,
-                              running ? Colors::red : Colors::green);
-    startStopButton.setEnabled(!starting);
+        case Page::loginWait:
+            detail.setBounds (area.removeFromTop (44));
+            area.removeFromTop (10);
+            codeLabel.setBounds (area.removeFromTop (54));
+            area.removeFromTop (16);
+            openPageButton.setBounds (area.removeFromTop (34));
+            area.removeFromTop (8);
+            cancelLoginButton.setBounds (area.removeFromTop (30));
+            break;
 
-    syncNowButton.setEnabled(running);
-    pauseToggle  .setEnabled(running);
+        case Page::folder:
+        {
+            accountLine.setBounds (area.removeFromTop (20));
+            area.removeFromTop (14);
+            localCaption.setBounds (area.removeFromTop (14));
+            auto row = area.removeFromTop (30);
+            chooseButton.setBounds (row.removeFromRight (140));
+            row.removeFromRight (8);
+            folderLine.setBounds (row);
+            area.removeFromTop (12);
+            remoteCaption.setBounds (area.removeFromTop (14));
+            area.removeFromTop (2);
+            remoteFolder.setBounds (area.removeFromTop (28));
+            area.removeFromTop (12);
+            recursiveToggle.setBounds (area.removeFromTop (24));
+            versionsToggle.setBounds (area.removeFromTop (24));
+            area.removeFromTop (8);
+            hint.setBounds (area.removeFromTop (54));
+            signOutButton.setBounds (area.removeFromBottom (28));
+            area.removeFromBottom (8);
+            doneButton.setBounds (area.removeFromBottom (38));
+            break;
+        }
 
-    int pending = service.getPendingFilesCount();
-    pendingLabel.setText(juce::String(pending) + (pending == 1 ? " pending" : " pending"),
-                         juce::dontSendNotification);
-    pendingLabel.setColour(juce::Label::textColourId,
-                           pending > 0 ? Colors::yellow : Colors::green);
-
-    auto lastFile = service.getLastSyncedFile();
-    lastSyncLabel.setText(lastFile.isEmpty() ? "No files yet" : "\u2191 " + lastFile,
-                          juce::dontSendNotification);
-
-    auto folder = service.getWatchFolder();
-    folderPathLabel.setText(folder.isEmpty() ? "Not selected" : folder,
-                            juce::dontSendNotification);
-    folderPathLabel.setColour(juce::Label::textColourId,
-                              folder.isEmpty() ? Colors::subtext : Colors::text);
-
-    auto err = service.consumeLastError();
-    if (err.isNotEmpty()) appendLog("[ERROR] " + err);
-
-    repaint();
-}
-
-void AudioBackuperEditor::timerCallback() { updateStatusUI(); }
-
-// ── Log helper ────────────────────────────────────────────────────────────────
-
-void AudioBackuperEditor::appendLog(const juce::String& message)
-{
-    auto time = juce::Time::getCurrentTime().toString(false, true, false, true);
-    logBox.moveCaretToEnd();
-    logBox.insertTextAtCaret("[" + time + "] " + message + "\n");
-
-    // Ограничиваем объём лога
-    auto lines = juce::StringArray::fromLines(logBox.getText());
-    if (lines.size() > 80)
-    {
-        lines.removeRange(0, lines.size() - 60);
-        logBox.setText(lines.joinIntoString("\n") + "\n");
-        logBox.moveCaretToEnd();
+        case Page::working:
+        {
+            detail.setBounds (area.removeFromTop (20));
+            if (progressBar.isVisible())
+            {
+                area.removeFromTop (6);
+                progressBar.setBounds (area.removeFromTop (18));
+            }
+            area.removeFromTop (10);
+            accountLine.setBounds (area.removeFromTop (18));
+            folderLine.setBounds (area.removeFromTop (18));
+            area.removeFromTop (8);
+            if (errorLine.isVisible())
+            {
+                errorLine.setBounds (area.removeFromTop (52));
+                if (errorButton.isVisible())
+                {
+                    errorButton.setBounds (area.removeFromTop (30).removeFromLeft (220));
+                    area.removeFromTop (8);
+                }
+            }
+            auto bottom = area.removeFromBottom (30);
+            pauseToggle.setBounds (bottom.removeFromLeft (100));
+            settingsButton.setBounds (bottom.removeFromRight (110));
+            area.removeFromBottom (8);
+            if (existingButton.isVisible())
+            {
+                existingButton.setBounds (area.removeFromBottom (30));
+                area.removeFromBottom (8);
+            }
+            recent.setBounds (area);
+            break;
+        }
     }
 }
 
-// ── Dialogs ───────────────────────────────────────────────────────────────────
-
-void AudioBackuperEditor::chooseWatchFolder()
+void AudioBackuperEditor::chooseFolder()
 {
-    chooser = std::make_unique<juce::FileChooser>(
-        "Choose folder to watch for audio files",
-        juce::File::getSpecialLocation(juce::File::userMusicDirectory));
-
-    chooser->launchAsync(
-        juce::FileBrowserComponent::openMode |
-        juce::FileBrowserComponent::canSelectDirectories,
-        [this](const juce::FileChooser& fc)
-        {
-            auto result = fc.getResult();
-            if (result.isDirectory())
-            {
-                service.setWatchFolder(result.getFullPathName());
-                appendLog("Watch folder: " + result.getFullPathName());
-            }
-        });
+    juce::File start (draft.localPath);
+    if (! start.isDirectory())
+    {
+        // Logic bounces here by default; elsewhere the Music folder is a fair guess.
+        auto music = juce::File::getSpecialLocation (juce::File::userMusicDirectory);
+        auto logic = music.getChildFile ("Logic/Bounces");
+        start = juce::PluginHostType().isLogic() && logic.isDirectory() ? logic : music;
+    }
+    chooser = std::make_unique<juce::FileChooser> (RU ("Папка, в которую сохраняются рендеры"), start);
+    chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectDirectories,
+                          [this] (const juce::FileChooser& fc)
+                          {
+                              auto dir = fc.getResult();
+                              if (! dir.isDirectory())
+                                  return;
+                              const bool followName = remoteFolder.getText().trim().isEmpty()
+                                                      || remoteFolder.getText() == juce::File (draft.localPath).getFileName();
+                              draft.localPath = dir.getFullPathName();
+                              if (followName)
+                                  remoteFolder.setText (dir.getFileName(), juce::dontSendNotification);
+                              refresh();
+                          });
 }
 
-void AudioBackuperEditor::openYandexTokenDialog()
+void AudioBackuperEditor::applyFolderSettings()
 {
-    auto* dialog = new juce::AlertWindow(
-        "Yandex Disk Token",
-        "Paste your Yandex Disk OAuth token below.\nGet one at: oauth.yandex.ru",
-        juce::MessageBoxIconType::InfoIcon);
+    auto w = client.getWatch();
+    w.localPath = draft.localPath;
+    w.remoteFolder = remoteFolder.getText().trim();
+    w.recursive = recursiveToggle.getToggleState();
+    w.overwrite = ! versionsToggle.getToggleState();
+    editingFolder = false;
+    client.setWatch (w);
+    refresh();
+}
 
-    dialog->addTextEditor("token", "", "OAuth Token:");
-    dialog->addButton("Save",   1, juce::KeyPress(juce::KeyPress::returnKey));
-    dialog->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
-
-    dialog->enterModalState(true,
-        juce::ModalCallbackFunction::create([this, dialog](int result)
-        {
-            if (result == 1)
-            {
-                auto token = dialog->getTextEditorContents("token").trim();
-                if (token.isNotEmpty()) { service.setYandexToken(token); appendLog("Yandex token saved."); }
-                else                   { appendLog("[WARN] Empty token — not saved."); }
-            }
-            delete dialog;
-        }), true);
+void AudioBackuperEditor::askForToken()
+{
+    auto* dialog = new juce::AlertWindow (RU ("Токен Яндекс Диска"),
+                                          RU ("Вставьте OAuth-токен с доступом к папке приложения. "
+                                              "Только для разработки: обычный вход идёт через браузер."),
+                                          juce::MessageBoxIconType::NoIcon);
+    dialog->addTextEditor ("token", {}, RU ("Токен:"), true);
+    dialog->addButton (RU ("Сохранить"), 1, juce::KeyPress (juce::KeyPress::returnKey));
+    dialog->addButton (RU ("Отмена"), 0, juce::KeyPress (juce::KeyPress::escapeKey));
+    juce::Component::SafePointer<AudioBackuperEditor> self (this);
+    dialog->enterModalState (true, juce::ModalCallbackFunction::create ([self, dialog] (int result)
+    {
+        auto token = dialog->getTextEditorContents ("token").trim();
+        if (result == 1 && token.isNotEmpty() && self != nullptr)
+            self->client.submitToken (token);
+    }), true);
 }

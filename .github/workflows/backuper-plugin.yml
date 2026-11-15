@@ -1,0 +1,27 @@
+name: backuper-plugin
+
+on:
+  push:
+    paths: ["juce-client/**", "core/**", ".github/workflows/backuper-plugin.yml"]
+  pull_request:
+    paths: ["juce-client/**", "core/**", ".github/workflows/backuper-plugin.yml"]
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: core/go.mod
+          cache-dependency-path: core/go.sum
+      - name: Configure
+        run: cmake -S juce-client -B juce-client/build -DCMAKE_BUILD_TYPE=Release -DAUDIO_BACKUPER_INSTALL=OFF
+      - name: Build plugin, helper and tests
+        run: cmake --build juce-client/build --config Release --parallel 4
+      - name: Processor checks
+        run: ctest --test-dir juce-client/build -C Release --output-on-failure
