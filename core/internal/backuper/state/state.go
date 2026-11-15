@@ -112,10 +112,11 @@ func (d *Data) AddEvent(e Event) {
 
 // Store guards Data and writes it to disk.
 type Store struct {
-	path  string
-	mu    sync.Mutex
-	data  *Data
-	dirty bool
+	path   string
+	saveMu sync.Mutex // one save at a time, so that files are written in the order they were taken
+	mu     sync.Mutex
+	data   *Data
+	dirty  bool
 }
 
 // Open loads the state from dir, starting empty when there is none. A file
@@ -180,7 +181,14 @@ func (s *Store) Change(fn func(d *Data) bool) {
 }
 
 // Save writes pending changes to disk.
+//
+// Saves are serialized from taking the snapshot to finishing the write.
+// Otherwise two saves could reach the disk in the opposite order and leave
+// the older snapshot there for good, losing what the newer one recorded.
 func (s *Store) Save() error {
+	s.saveMu.Lock()
+	defer s.saveMu.Unlock()
+
 	s.mu.Lock()
 	if !s.dirty {
 		s.mu.Unlock()
@@ -192,5 +200,11 @@ func (s *Store) Save() error {
 	if err != nil {
 		return err
 	}
-	return osutil.WriteFileAtomic(s.path, raw, 0o600)
+	if err := osutil.WriteFileAtomic(s.path, raw, 0o600); err != nil {
+		s.mu.Lock()
+		s.dirty = true // not on disk yet: the next save tries again
+		s.mu.Unlock()
+		return err
+	}
+	return nil
 }

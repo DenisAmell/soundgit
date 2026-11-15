@@ -3,6 +3,7 @@ package engine
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -196,7 +197,9 @@ func (w *world) until(what string, cond func() bool) {
 	deadline := time.Now().Add(5 * time.Second)
 	for !cond() {
 		if time.Now().After(deadline) {
-			w.t.Fatalf("timed out waiting for: %s\ncloud holds: %v", what, w.paths())
+			var dump []byte
+			w.st.View(func(d *state.Data) { dump, _ = json.MarshalIndent(d, "", " ") })
+			w.t.Fatalf("timed out waiting for: %s\ncloud holds: %v\nstate: %s", what, w.paths(), dump)
 		}
 		time.Sleep(5 * time.Millisecond)
 	}

@@ -145,8 +145,11 @@ func list(root string, recursive bool) (files map[string]found, ok bool) {
 		if !d.Type().IsRegular() || !candidate(d.Name()) {
 			return nil
 		}
-		info, err := d.Info()
-		if err != nil {
+		// Ask the file itself rather than the directory listing: on Windows
+		// the listing can carry a size and time that lag behind the file,
+		// and everything later compares against os.Stat.
+		info, err := os.Stat(p)
+		if err != nil || !info.Mode().IsRegular() {
 			return nil
 		}
 		rel, err := filepath.Rel(root, p)
