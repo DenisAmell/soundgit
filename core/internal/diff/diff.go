@@ -105,37 +105,54 @@ func trackName(t *ir.Track) string {
 	return fmt.Sprintf("track %q", t.Name)
 }
 
+// markers compares markers and regions. A region is stored as two entries
+// with the same index: its start, which carries the name, and its end.
 func (d *differ) markers() {
-	key := func(ms []ir.Marker) map[string]ir.Marker {
-		out, seen := map[string]ir.Marker{}, map[int]int{}
+	type entry struct {
+		m   ir.Marker
+		end bool
+	}
+	key := func(ms []ir.Marker) map[string]entry {
+		out, seen := map[string]entry{}, map[int]int{}
 		for _, m := range ms {
-			out[fmt.Sprintf("%d#%d", m.Index, seen[m.Index])] = m
+			out[fmt.Sprintf("%d#%d", m.Index, seen[m.Index])] = entry{m, m.Region && seen[m.Index] > 0}
 			seen[m.Index]++
 		}
 		return out
 	}
 	am, bm := key(d.a.Markers), key(d.b.Markers)
-	name := func(m ir.Marker) string {
-		kind := "marker"
-		if m.Region {
-			kind = "region"
+	name := func(ms map[string]entry, e entry) string {
+		if !e.m.Region {
+			return fmt.Sprintf("marker %d %q", e.m.Index, e.m.Name)
 		}
-		return fmt.Sprintf("%s %d %q", kind, m.Index, m.Name)
+		// The end entry has no name of its own: use the region's.
+		start := ms[fmt.Sprintf("%d#0", e.m.Index)]
+		return fmt.Sprintf("region %d %q", e.m.Index, start.m.Name)
 	}
 	for _, k := range sortedKeys(am) {
-		if _, ok := bm[k]; !ok {
-			d.add(Change{Kind: Removed, Type: "marker", Entity: name(am[k])})
+		if _, ok := bm[k]; !ok && !am[k].end {
+			d.add(Change{Kind: Removed, Type: "marker", Entity: name(am, am[k])})
 		}
 	}
 	for _, k := range sortedKeys(bm) {
 		y := bm[k]
 		x, ok := am[k]
-		if !ok {
-			d.add(Change{Kind: Added, Type: "marker", Entity: name(y)})
-			continue
+		n := name(bm, y)
+		switch {
+		case !ok && y.end:
+			// Reported together with the region's start.
+		case !ok:
+			d.add(Change{Kind: Added, Type: "marker", Entity: n})
+		case y.end:
+			d.field("marker", n, "", "end", x.m.Time, y.m.Time)
+		default:
+			what := "time"
+			if y.m.Region {
+				what = "start"
+			}
+			d.field("marker", n, "", what, x.m.Time, y.m.Time)
+			d.field("marker", n, "", "name", x.m.Name, y.m.Name)
 		}
-		d.field("marker", name(y), "", "time", x.Time, y.Time)
-		d.field("marker", name(y), "", "name", x.Name, y.Name)
 	}
 }
 
@@ -263,7 +280,9 @@ func (d *differ) items(who string, a, b *ir.Track) {
 	name := func(it *ir.Item) string {
 		label := ""
 		if len(it.Takes) > 0 {
-			label = fmt.Sprintf(" %q", it.Takes[min(it.ActiveTake, len(it.Takes)-1)].Name)
+			if n := it.Takes[min(it.ActiveTake, len(it.Takes)-1)].Name; n != "" {
+				label = fmt.Sprintf(" %q", n)
+			}
 		}
 		return fmt.Sprintf("%s / item%s at %ss", who, label, num(it.Position))
 	}
@@ -300,7 +319,12 @@ func (d *differ) takes(item string, a, b *ir.Item) {
 		return out
 	}
 	at, bt := index(a), index(b)
-	name := func(t *ir.Take) string { return fmt.Sprintf("%s / take %q", item, t.Name) }
+	name := func(t *ir.Take) string {
+		if t.Name == "" {
+			return item + " / take"
+		}
+		return fmt.Sprintf("%s / take %q", item, t.Name)
+	}
 	for _, t := range a.Takes {
 		if bt[t.ID] == nil {
 			d.add(Change{Kind: Removed, Type: "take", Entity: name(t), ID: t.ID})
