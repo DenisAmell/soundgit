@@ -1,0 +1,67 @@
+== 01-empty.rpp -> 02-track.rpp
+  + track "Bass"
+== 02-track.rpp -> 03-track-volume-pan.rpp
+  ~ track "Bass": volume 1 → 0.5 (+0.0 dB → -6.0 dB)
+  ~ track "Bass": pan 0 → -0.25
+== 03-track-volume-pan.rpp -> 04-track-mute-phase.rpp
+  ~ track "Bass": mute off → on
+  ~ track "Bass": phase off → on
+== 04-track-mute-phase.rpp -> 05-folders.rpp
+  + track "Drums bus"
+  + track "Kick \"in\""
+  + track "Snare 'top' \"x\""
+  ~ track "Bass": mute on → off
+== 05-folders.rpp -> 06-audio-item.rpp
+  + track "Kick \"in\"" / item "sine 440.wav" at 0s
+== 06-audio-item.rpp -> 07-audio-item-moved.rpp
+  ~ track "Kick \"in\"" / item "sine 440.wav" at 1.5s: position 0 → 1.5
+  ~ track "Kick \"in\"" / item "sine 440.wav" at 1.5s: fadeIn 0.01 → 0.05
+  ~ track "Kick \"in\"" / item "sine 440.wav" at 1.5s: fadeOut 0.01 → 0.1
+== 07-audio-item-moved.rpp -> 08-takes.rpp
+  ~ track "Kick \"in\"" / item "second take" at 1.5s: activeTake 1 → 2
+  + track "Kick \"in\"" / item "second take" at 1.5s / take "second take"
+== 08-takes.rpp -> 09-midi-item.rpp
+  + track "Keys"
+== 09-midi-item.rpp -> 10-midi-note-edited.rpp
+  ~ track "Keys" / item at 2s / take: 2 MIDI events changed between 480 ticks and 960 ticks
+== 10-midi-note-edited.rpp -> 11-fx.rpp
+  + track "Bass" / fx "VST: ReaEQ (Cockos)"
+  + track "Bass" / fx "utility/volume"
+== 11-fx.rpp -> 12-fx-param.rpp
+  ~ track "Bass" / fx "VST: ReaEQ (Cockos)": state — plugin settings changed
+== 12-fx-param.rpp -> 13-fx-bypass.rpp
+  ~ track "Bass" / fx "utility/volume": bypass off → on
+== 13-fx-bypass.rpp -> 14-fx-reordered.rpp
+  > track "Bass" / fx "VST: ReaEQ (Cockos)": moved from position 1 to 2
+== 14-fx-reordered.rpp -> 15-envelope.rpp
+  ~ track "Bass": volume 0.5 → 1 (-6.0 dB → +0.0 dB)
+  + track "Bass" / volume automation
+== 15-envelope.rpp -> 16-envelope-edited.rpp
+  ~ track "Bass" / volume automation: 2 points changed between 2s and 3s
+== 16-envelope-edited.rpp -> 17-tempo.rpp
+  ~ project: tempo 120 → 128
+  ~ track "Bass" / volume automation: 3 points changed between 1.875s and 4s
+  ~ track "Kick \"in\"" / item "second take" at 1.40625s: position 1.5 → 1.40625
+  ~ track "Kick \"in\"" / item "second take" at 1.40625s: length 1 → 0.9375
+  ~ track "Kick \"in\"" / item "second take" at 1.40625s: fadeIn 0.05 → 0.046875
+  ~ track "Kick \"in\"" / item "second take" at 1.40625s: fadeOut 0.1 → 0.09375
+  ~ track "Kick \"in\"" / item "second take" at 1.40625s / take "sine 440.wav": playrate 1 → 1.06666666666667
+  ~ track "Kick \"in\"" / item "second take" at 1.40625s / take "second take": playrate 1 → 1.06666666666667
+  ~ track "Keys" / item at 1.875s: position 2 → 1.875
+  ~ track "Keys" / item at 1.875s: length 2 → 1.875
+== 17-tempo.rpp -> 18-tempo-map.rpp
+  ~ project / tempo automation: 2 points changed between 0s and 7.5s
+== 18-tempo-map.rpp -> 19-markers.rpp
+  + marker 1 "Verse"
+  + region 2 "Chorus `big`"
+== 19-markers.rpp -> 20-sends.rpp
+  + track "Reverb"
+== 20-sends.rpp -> 21-view-state-only.rpp
+== 21-view-state-only.rpp -> 22-resave.rpp
+== 22-resave.rpp -> 23-guid-duplicate-track.rpp
+  + track "Bass"
+== 23-guid-duplicate-track.rpp -> 24-guid-duplicate-item.rpp
+  + track "Kick \"in\"" / item "second take" at 2.34375s
+== 24-guid-duplicate-item.rpp -> 25-guid-rename-move.rpp
+  > track "Sub Bass": moved from position 1 to 7
+  ~ track "Sub Bass": name "Bass" → "Sub Bass"

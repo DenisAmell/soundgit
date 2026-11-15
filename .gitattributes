@@ -1,0 +1,4 @@
+# Test data is compared byte for byte: never convert line endings in it.
+# Reaper writes .rpp files with CRLF on every platform, golden files use LF.
+testdata/** -text
+**/testdata/** -text
