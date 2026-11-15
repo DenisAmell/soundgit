@@ -49,3 +49,7 @@ xcuserdata/
 
 # ── Audio Backuper ───────────────────────────────────────────
 /juce-client/oauth.json
+
+/dist/
+/juce-client/build-release/
+/juce-client/build-release.*.log

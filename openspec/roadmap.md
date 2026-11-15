@@ -17,7 +17,7 @@
 | 8 | Вторая DAW: Ableton Live | `add-ableton-adapter` | — |
 | 9 | Logic Pro на уровне «пакет» | `add-logic-package-adapter` | — |
 | R | Исследовательский трек ВКР (параллельно с этапа 2) | `research-*` | — |
-| B | Audio Backuper — отдельный мини-продукт | `rebuild-audio-backuper` | **текущий приоритет**: реализовано и проверено в Reaper на поддельном облаке; ждёт регистрации приложений в облаках и ручных проверок в Logic, Ableton и Windows — см. [audio-backuper.md](audio-backuper.md) |
+| B | Audio Backuper — отдельный мини-продукт | `rebuild-audio-backuper`, `package-audio-backuper` | **текущий приоритет**: реализовано и проверено в Reaper на поддельном облаке; ждёт регистрации приложений в облаках и ручных проверок в Logic, Ableton и Windows — см. [audio-backuper.md](audio-backuper.md) |
 
 ## Этап 0. Каркас
 

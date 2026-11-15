@@ -1,5 +1,15 @@
 cmake_minimum_required(VERSION 3.22)
-project(AudioBackuper VERSION 0.2.0)
+
+# One version for the plugin, the helper and the installers: the helper's.
+set(CORE_DIR "${CMAKE_CURRENT_LIST_DIR}/../core")
+file(STRINGS "${CORE_DIR}/internal/backuper/helper/helper.go" HELPER_VERSION_LINE REGEX "^var Version = ")
+string(REGEX MATCH "\"([0-9.]+)\"" _ "${HELPER_VERSION_LINE}")
+set(HELPER_VERSION "${CMAKE_MATCH_1}")
+if(NOT HELPER_VERSION)
+    message(FATAL_ERROR "Could not read the helper version from helper.go")
+endif()
+
+project(AudioBackuper VERSION ${HELPER_VERSION})
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -20,16 +30,8 @@ FetchContent_MakeAvailable(JUCE)
 # ── The helper ────────────────────────────────────────────────────────────────
 # A Go program from ../core. It is built here and placed inside every plugin
 # bundle, so installing the plugin is all a user has to do.
-set(CORE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../core")
 find_program(GO_EXECUTABLE go REQUIRED)
-
-file(STRINGS "${CORE_DIR}/internal/backuper/helper/helper.go" HELPER_VERSION_LINE REGEX "^var Version = ")
-string(REGEX MATCH "\"([0-9.]+)\"" _ "${HELPER_VERSION_LINE}")
-set(HELPER_VERSION "${CMAKE_MATCH_1}")
-if(NOT HELPER_VERSION)
-    message(FATAL_ERROR "Could not read the helper version from helper.go")
-endif()
-message(STATUS "Audio Backuper helper version: ${HELPER_VERSION}")
+message(STATUS "Audio Backuper version: ${HELPER_VERSION}")
 
 # Identifiers of the applications registered with the clouds. Without the
 # file the build works, but signing in through the browser is unavailable.
